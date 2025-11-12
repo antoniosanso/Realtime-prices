@@ -1,9 +1,9 @@
 import argparse, os, re, csv, json, urllib.parse, datetime, sys
-from typing import Dict
 import pandas as pd
 from tqdm import tqdm
 from playwright.sync_api import sync_playwright
 
+# Regole base per Investing
 DEFAULT_RULES = {
     "it.investing.com": {
         "name": ["h1", "div.instrument-header h1", "div.float_lang_base_1 h1"],
@@ -27,14 +27,14 @@ def parse_urls(path: str):
         with open(path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if row.get('url'):
+                if (row.get("url") or "").strip():
                     urls.append(row)
     else:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 u = line.strip()
-                if u and not u.startswith('#'):
-                    urls.append({'url': u})
+                if u and not u.startswith("#"):
+                    urls.append({"url": u})
     return urls
 
 def sanitize(s: str) -> str:
@@ -42,7 +42,7 @@ def sanitize(s: str) -> str:
 
 def try_select(page, selectors, wait_ms=8000):
     for sel in selectors:
-        if not sel: 
+        if not sel:
             continue
         try:
             page.wait_for_selector(sel, state="visible", timeout=wait_ms)
@@ -68,7 +68,7 @@ def try_text_fragment(url: str):
     return out
 
 def main():
-    ap = argparse.ArgumentParser(description="Screenshots + quotes (robust)")
+    ap = argparse.ArgumentParser(description="Screenshots + quote extraction")
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--viewport", default="1366x768")
@@ -76,11 +76,13 @@ def main():
     ap.add_argument("--timeout", type=int, default=120000)
     args = ap.parse_args()
 
+    # Crea SEMPRE la cartella timestamp
     width, height = (int(x) for x in args.viewport.lower().split("x"))
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.out, ts)
     os.makedirs(out_dir, exist_ok=True)
 
+    # Log di run
     urls = parse_urls(args.input)
     with open(os.path.join(out_dir, "run_summary.txt"), "w", encoding="utf-8") as f:
         f.write(f"INPUT: {args.input}\nTOTAL_URLS: {len(urls)}\n")
@@ -88,6 +90,7 @@ def main():
     if not urls:
         with open(os.path.join(out_dir, "NO_DATA.txt"), "w", encoding="utf-8") as f:
             f.write("No URLs found\n")
+        print("[WARN] No URLs found; created NO_DATA.txt")
         return
 
     records = []
@@ -95,9 +98,12 @@ def main():
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
         context = browser.new_context(
             viewport={"width": width, "height": height},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36")
         )
 
+        # Blocca ad/analytics pesanti
         def route_handler(route):
             url = route.request.url
             if any(pat in url for pat in BLOCK_PATTERNS):
@@ -108,10 +114,13 @@ def main():
         page = context.new_page()
 
         for row in tqdm(urls, desc="Process URLs"):
-            url = row.get("url")
+            url = (row.get("url") or "").strip()
+            if not url:
+                continue
             parsed = urllib.parse.urlparse(url)
             domain = parsed.netloc.lower()
 
+            # Naviga (no 'networkidle', che su Investing va in timeout)
             try:
                 page.goto(url, timeout=args.timeout, wait_until="domcontentloaded")
             except Exception as e:
@@ -119,7 +128,9 @@ def main():
                     ef.write(str(e))
                 continue
 
-            for sel in ["button:has-text('Accept')","button:has-text('Accetta')","[id*='onetrust-accept']","[aria-label*='accept']"]:
+            # Chiudi cookie (best effort)
+            for sel in ["button:has-text('Accept')","button:has-text('Accetta')",
+                        "[id*='onetrust-accept']","[aria-label*='accept']"]:
                 try:
                     page.locator(sel).first.click(timeout=700)
                     break
@@ -140,6 +151,7 @@ def main():
                 price = price or frag.get("price","")
                 change = change or frag.get("change","")
 
+            # Screenshot sempre
             shot_name = sanitize(f"{domain}_{parsed.path}") + ".png"
             try:
                 page.screenshot(path=os.path.join(out_dir, shot_name), full_page=True)
@@ -147,13 +159,20 @@ def main():
                 with open(os.path.join(out_dir, f"ERROR_SHOT_{sanitize(url)}.txt"), "w", encoding="utf-8") as ef:
                     ef.write(str(e))
 
-            records.append({"source": domain, "url": url, "name": name, "price": price, "change_pct": change, "datetime_str": dt_str})
+            records.append({
+                "source": domain, "url": url, "name": name,
+                "price": price, "change_pct": change, "datetime_str": dt_str
+            })
 
         browser.close()
 
+    # Salva sempre la tabella (anche se vuota: serve per debug)
     df = pd.DataFrame.from_records(records)
     df.to_csv(os.path.join(out_dir, "quotes.csv"), index=False)
     with open(os.path.join(out_dir, "quotes.json"), "w", encoding="utf-8") as jf:
         json.dump(records, jf, ensure_ascii=False, indent=2)
 
     print(f"[OK] Outputs -> {out_dir}")
+
+if __name__ == "__main__":
+    main()
