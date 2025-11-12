@@ -2,6 +2,7 @@ import argparse, os, re, csv, json, urllib.parse, datetime, sys
 import pandas as pd
 from tqdm import tqdm
 from playwright.sync_api import sync_playwright
+from zoneinfo import ZoneInfo  # per orario locale corretto (CET/CEST)
 
 # Selettori ampliati per Investing (IT)
 DEFAULT_RULES = {
@@ -27,12 +28,7 @@ DEFAULT_RULES = {
             "span.instrument-price_change-percent__19cas",
             "span:has-text('%')",
         ],
-        "datetime": [
-            "time[data-test='instrument-price-last-update-time']",
-            "span[data-test='instrument-price-last-update-time']",
-            "div.u-text-left time",
-            "div.instrument-header time",
-        ],
+        # non usiamo più datetime di pagina (richiesto di rimuoverlo)
     }
 }
 
@@ -83,13 +79,9 @@ def clean_abs(s: str) -> str:
         return s
     s = s.replace("(", "").replace(")", "").strip()
     s = re.sub(r"\s+", " ", s)
-    # cerca pattern con segno opzionale e decimale europeo
     m = re.search(r"[-+]?\d{1,3}(?:\.\d{3})*,\d{2}", s)
     if m:
-        # se manca il segno, prova a dedurlo da classi colore (già gestite dai selettori)
-        # comunque restituiamo il numero trovato
-        return m.group(0) if s[0] in "+-" else m.group(0)
-    # fallback breve: numero con virgola
+        return m.group(0)
     m2 = re.search(r"\d+,\d+", s)
     return m2.group(0) if m2 else s
 
@@ -101,7 +93,7 @@ def clean_pct(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     m = re.search(r"[-+]?\d+,\d+%", s)
     if m:
-        return m.group(0) if s[0] in "+-" else m.group(0)
+        return m.group(0)
     m2 = re.search(r"\d+,\d+%", s)
     return m2.group(0) if m2 else s
 
@@ -155,10 +147,14 @@ def main():
         print("[WARN] No URLs found; created NO_DATA.txt")
         return
 
-    records = []
-    now_utc = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    now_local = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # timezone locale (default Europe/Rome; override con env TIMEZONE)
+    tz_name = os.environ.get("TIMEZONE", "Europe/Rome")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("Europe/Rome")
 
+    records = []
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
         context = browser.new_context(
@@ -209,7 +205,6 @@ def main():
             price = wait_get_text(page, [row.get("price_sel","")] + rules.get("price", []))
             ch_abs_raw = wait_get_text(page, [row.get("change_abs_sel","")] + rules.get("change_abs", []))
             ch_pct_raw = wait_get_text(page, [row.get("change_pct_sel","")] + rules.get("change_pct", []))
-            dt_txt = wait_get_text(page, [row.get("datetime_sel","")] + rules.get("datetime", []), wait_ms=5000)
 
             # Fallback da frammento URL (solo % e prezzo)
             if (not price) or (not ch_pct_raw):
@@ -232,16 +227,17 @@ def main():
                 with open(os.path.join(out_dir, f"ERROR_SHOT_{sanitize(url)}.txt"), "w", encoding="utf-8") as ef:
                     ef.write(str(e))
 
+            # Ora locale corretta (CET/CEST)
+            captured_at_local = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
             records.append({
                 "source": domain,
                 "url": url,
                 "name": name,
                 "price": price,
-                "change_abs": change_abs,     # ⇠ valore assoluto
-                "change_pct": change_pct,     # ⇠ percentuale
-                "datetime_str": dt_txt,       # ora/etichetta dalla pagina (se presente)
-                "captured_at_utc": now_utc,   # sempre presente
-                "captured_at_local": now_local,
+                "change_abs": change_abs,     # valore assoluto
+                "change_pct": change_pct,     # percentuale
+                "captured_at_local": captured_at_local,
             })
 
         browser.close()
