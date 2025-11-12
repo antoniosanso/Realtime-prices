@@ -3,13 +3,36 @@ import pandas as pd
 from tqdm import tqdm
 from playwright.sync_api import sync_playwright
 
-# Regole base per Investing
+# Selettori ampliati per Investing (IT)
 DEFAULT_RULES = {
     "it.investing.com": {
-        "name": ["h1", "div.instrument-header h1", "div.float_lang_base_1 h1"],
-        "price": ["[data-test='instrument-price-last']", "span.text-2xl"],
-        "change": ["[data-test='instrument-price-change']", "span.bold.greenFont", "span.bold.redFont"],
-        "datetime": ["time[data-test='instrument-price-last-update-time']"]
+        "name": [
+            "h1",
+            "div.instrument-header h1",
+            "div.float_lang_base_1 h1",
+        ],
+        "price": [
+            "[data-test='instrument-price-last']",
+            "div.instrument-price_instrument-price__3uw25 span",
+            "span.text-2xl",
+        ],
+        # assoluta e percentuale hanno spesso data-test diversi
+        "change_abs": [
+            "[data-test='instrument-price-change']",
+            "span.instrument-price_change__19cas",
+            "span.bold.greenFont", "span.bold.redFont",
+        ],
+        "change_pct": [
+            "[data-test='instrument-price-change-percent']",
+            "span.instrument-price_change-percent__19cas",
+            "span:has-text('%')",
+        ],
+        "datetime": [
+            "time[data-test='instrument-price-last-update-time']",
+            "span[data-test='instrument-price-last-update-time']",
+            "div.u-text-left time",
+            "div.instrument-header time",
+        ],
     }
 }
 
@@ -27,7 +50,8 @@ def parse_urls(path: str):
         with open(path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if (row.get("url") or "").strip():
+                u = (row.get("url") or "").strip()
+                if u:
                     urls.append(row)
     else:
         with open(path, "r", encoding="utf-8") as f:
@@ -40,7 +64,7 @@ def parse_urls(path: str):
 def sanitize(s: str) -> str:
     return re.sub(r"[^\w\.-]+", "_", s).strip("_")[:180]
 
-def try_select(page, selectors, wait_ms=8000):
+def wait_get_text(page, selectors, wait_ms=8000):
     for sel in selectors:
         if not sel:
             continue
@@ -53,8 +77,37 @@ def try_select(page, selectors, wait_ms=8000):
             continue
     return ""
 
-def try_text_fragment(url: str):
-    out = {"price": "", "change": ""}
+def clean_abs(s: str) -> str:
+    """Normalizza la variazione assoluta es. '+12,53' o '-0,75'."""
+    if not s:
+        return s
+    s = s.replace("(", "").replace(")", "").strip()
+    s = re.sub(r"\s+", " ", s)
+    # cerca pattern con segno opzionale e decimale europeo
+    m = re.search(r"[-+]?\d{1,3}(?:\.\d{3})*,\d{2}", s)
+    if m:
+        # se manca il segno, prova a dedurlo da classi colore (già gestite dai selettori)
+        # comunque restituiamo il numero trovato
+        return m.group(0) if s[0] in "+-" else m.group(0)
+    # fallback breve: numero con virgola
+    m2 = re.search(r"\d+,\d+", s)
+    return m2.group(0) if m2 else s
+
+def clean_pct(s: str) -> str:
+    """Normalizza la percentuale es. '+1,26%' o '-0,45%'."""
+    if not s:
+        return s
+    s = s.replace("(", "").replace(")", "").strip()
+    s = re.sub(r"\s+", " ", s)
+    m = re.search(r"[-+]?\d+,\d+%", s)
+    if m:
+        return m.group(0) if s[0] in "+-" else m.group(0)
+    m2 = re.search(r"\d+,\d+%", s)
+    return m2.group(0) if m2 else s
+
+def fallback_from_fragment(url: str):
+    """Se l'URL contiene un text fragment estrae prezzo e % (+1,23%)."""
+    out = {"price": "", "change_pct": ""}
     frag = urllib.parse.urlparse(url).fragment
     if not frag:
         return out
@@ -62,10 +115,21 @@ def try_text_fragment(url: str):
     m = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})", frag)
     if m:
         out["price"] = m.group(1)
-    m2 = re.search(r"\(([-+]\d+,\d+%)\)", frag)
+    m2 = re.search(r"\(([-+]?\d+,\d+%)\)", frag)
     if m2:
-        out["change"] = m2.group(1)
+        out["change_pct"] = m2.group(1)
     return out
+
+def page_scan_pct(page) -> str:
+    """Ultimo tentativo: cerca una % nel testo della pagina."""
+    try:
+        txt = page.inner_text("body")[:200000]
+        m = re.search(r"[-+]?\d+,\d+%", txt)
+        if m:
+            return m.group(0)
+    except Exception:
+        pass
+    return ""
 
 def main():
     ap = argparse.ArgumentParser(description="Screenshots + quote extraction")
@@ -76,13 +140,11 @@ def main():
     ap.add_argument("--timeout", type=int, default=120000)
     args = ap.parse_args()
 
-    # Crea SEMPRE la cartella timestamp
     width, height = (int(x) for x in args.viewport.lower().split("x"))
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.out, ts)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Log di run
     urls = parse_urls(args.input)
     with open(os.path.join(out_dir, "run_summary.txt"), "w", encoding="utf-8") as f:
         f.write(f"INPUT: {args.input}\nTOTAL_URLS: {len(urls)}\n")
@@ -94,6 +156,9 @@ def main():
         return
 
     records = []
+    now_utc = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_local = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
         context = browser.new_context(
@@ -103,7 +168,7 @@ def main():
                         "Chrome/122.0.0.0 Safari/537.36")
         )
 
-        # Blocca ad/analytics pesanti
+        # Blocca risorse pesanti/ads
         def route_handler(route):
             url = route.request.url
             if any(pat in url for pat in BLOCK_PATTERNS):
@@ -119,8 +184,8 @@ def main():
                 continue
             parsed = urllib.parse.urlparse(url)
             domain = parsed.netloc.lower()
+            rules = DEFAULT_RULES.get(domain, {})
 
-            # Naviga (no 'networkidle', che su Investing va in timeout)
             try:
                 page.goto(url, timeout=args.timeout, wait_until="domcontentloaded")
             except Exception as e:
@@ -128,7 +193,7 @@ def main():
                     ef.write(str(e))
                 continue
 
-            # Chiudi cookie (best effort)
+            # Cookie wall (best effort)
             for sel in ["button:has-text('Accept')","button:has-text('Accetta')",
                         "[id*='onetrust-accept']","[aria-label*='accept']"]:
                 try:
@@ -140,16 +205,24 @@ def main():
             if args.delay:
                 page.wait_for_timeout(args.delay)
 
-            rules = DEFAULT_RULES.get(domain, {})
-            name = try_select(page, [row.get("name_sel","")] + rules.get("name", []))
-            price = try_select(page, [row.get("price_sel","")] + rules.get("price", []))
-            change = try_select(page, [row.get("change_sel","")] + rules.get("change", []))
-            dt_str = try_select(page, [row.get("datetime_sel","")] + rules.get("datetime", []), wait_ms=4000)
+            name = wait_get_text(page, [row.get("name_sel","")] + rules.get("name", []))
+            price = wait_get_text(page, [row.get("price_sel","")] + rules.get("price", []))
+            ch_abs_raw = wait_get_text(page, [row.get("change_abs_sel","")] + rules.get("change_abs", []))
+            ch_pct_raw = wait_get_text(page, [row.get("change_pct_sel","")] + rules.get("change_pct", []))
+            dt_txt = wait_get_text(page, [row.get("datetime_sel","")] + rules.get("datetime", []), wait_ms=5000)
 
-            if not price or not change:
-                frag = try_text_fragment(url)
-                price = price or frag.get("price","")
-                change = change or frag.get("change","")
+            # Fallback da frammento URL (solo % e prezzo)
+            if (not price) or (not ch_pct_raw):
+                frag_vals = fallback_from_fragment(url)
+                price = price or frag_vals.get("price","")
+                ch_pct_raw = ch_pct_raw or frag_vals.get("change_pct","")
+
+            # Fallback scan del body per la %
+            if not ch_pct_raw:
+                ch_pct_raw = page_scan_pct(page)
+
+            change_abs = clean_abs(ch_abs_raw)
+            change_pct = clean_pct(ch_pct_raw)
 
             # Screenshot sempre
             shot_name = sanitize(f"{domain}_{parsed.path}") + ".png"
@@ -160,13 +233,19 @@ def main():
                     ef.write(str(e))
 
             records.append({
-                "source": domain, "url": url, "name": name,
-                "price": price, "change_pct": change, "datetime_str": dt_str
+                "source": domain,
+                "url": url,
+                "name": name,
+                "price": price,
+                "change_abs": change_abs,     # ⇠ valore assoluto
+                "change_pct": change_pct,     # ⇠ percentuale
+                "datetime_str": dt_txt,       # ora/etichetta dalla pagina (se presente)
+                "captured_at_utc": now_utc,   # sempre presente
+                "captured_at_local": now_local,
             })
 
         browser.close()
 
-    # Salva sempre la tabella (anche se vuota: serve per debug)
     df = pd.DataFrame.from_records(records)
     df.to_csv(os.path.join(out_dir, "quotes.csv"), index=False)
     with open(os.path.join(out_dir, "quotes.json"), "w", encoding="utf-8") as jf:
