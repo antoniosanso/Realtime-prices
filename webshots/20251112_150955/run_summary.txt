@@ -1,2 +1,2 @@
 INPUT: urls.csv
-TOTAL_URLS: 2
+TOTAL_URLS: 3
