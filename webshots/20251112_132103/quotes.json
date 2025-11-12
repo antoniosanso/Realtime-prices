@@ -1,0 +1,20 @@
+[
+  {
+    "source": "it.investing.com",
+    "url": "https://it.investing.com/etfs/lyxor-msci-world-info-tech-tr?cid=47228",
+    "name": "Amundi MSCI World Information Technology UCITS ETF EUR Acc (LTNOW)",
+    "price": "998,81",
+    "change_abs": "+14,68",
+    "change_pct": "+1,49%",
+    "captured_at_local": "2025-11-12 14:21:10"
+  },
+  {
+    "source": "it.investing.com",
+    "url": "https://it.investing.com/etfs/xtrackers-ai-and-big-data-ucits?cid=1178262",
+    "name": "Xtrackers Artificial Intelligence & Big Data UCITS ETF 1C (XAIX)",
+    "price": "158,86",
+    "change_abs": "+1,70",
+    "change_pct": "+1,08%",
+    "captured_at_local": "2025-11-12 14:21:17"
+  }
+]
