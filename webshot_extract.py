@@ -28,7 +28,6 @@ DEFAULT_RULES = {
             "span.instrument-price_change-percent__19cas",
             "span:has-text('%')",
         ],
-        # non usiamo più datetime di pagina (richiesto di rimuoverlo)
     }
 }
 
@@ -37,7 +36,10 @@ BLOCK_PATTERNS = [
     "facebook.net", "ads.", "/ads?", "/adserver", "scorecardresearch.com"
 ]
 
+# ---------- utility ----------
+
 def parse_urls(path: str):
+    """Legge l'input CSV (almeno colonna 'url'); ritorna lista di dict preservando l'ordine."""
     urls = []
     if not os.path.exists(path):
         print(f"[ERROR] Input file not found: {path}", file=sys.stderr)
@@ -48,7 +50,7 @@ def parse_urls(path: str):
             for row in reader:
                 u = (row.get("url") or "").strip()
                 if u:
-                    urls.append(row)
+                    urls.append({"url": u})
     else:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -123,8 +125,10 @@ def page_scan_pct(page) -> str:
         pass
     return ""
 
+# ---------- main ----------
+
 def main():
-    ap = argparse.ArgumentParser(description="Screenshots + quote extraction")
+    ap = argparse.ArgumentParser(description="Screenshots + quote extraction + update urls.csv")
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--viewport", default="1366x768")
@@ -137,11 +141,13 @@ def main():
     out_dir = os.path.join(args.out, ts)
     os.makedirs(out_dir, exist_ok=True)
 
-    urls = parse_urls(args.input)
-    with open(os.path.join(out_dir, "run_summary.txt"), "w", encoding="utf-8") as f:
-        f.write(f"INPUT: {args.input}\nTOTAL_URLS: {len(urls)}\n")
+    input_path = args.input
+    url_rows = parse_urls(input_path)
 
-    if not urls:
+    with open(os.path.join(out_dir, "run_summary.txt"), "w", encoding="utf-8") as f:
+        f.write(f"INPUT: {input_path}\nTOTAL_URLS: {len(url_rows)}\n")
+
+    if not url_rows:
         with open(os.path.join(out_dir, "NO_DATA.txt"), "w", encoding="utf-8") as f:
             f.write("No URLs found\n")
         print("[WARN] No URLs found; created NO_DATA.txt")
@@ -154,7 +160,9 @@ def main():
     except Exception:
         tz = ZoneInfo("Europe/Rome")
 
-    records = []
+    records = []            # per quotes.csv (storico del run)
+    latest_rows = []        # per urls.csv (valori più recenti)
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
         context = browser.new_context(
@@ -174,7 +182,7 @@ def main():
 
         page = context.new_page()
 
-        for row in tqdm(urls, desc="Process URLs"):
+        for row in tqdm(url_rows, desc="Process URLs"):
             url = (row.get("url") or "").strip()
             if not url:
                 continue
@@ -185,6 +193,12 @@ def main():
             try:
                 page.goto(url, timeout=args.timeout, wait_until="domcontentloaded")
             except Exception as e:
+                # anche se fallisce, appendiamo riga vuota (per mantenere n° righe)
+                latest_rows.append({
+                    "url": url, "name": "", "price": "",
+                    "change_abs": "", "change_pct": "",
+                    "captured_at_local": datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
+                })
                 with open(os.path.join(out_dir, f"ERROR_NAV_{sanitize(url)}.txt"), "w", encoding="utf-8") as ef:
                     ef.write(str(e))
                 continue
@@ -201,10 +215,10 @@ def main():
             if args.delay:
                 page.wait_for_timeout(args.delay)
 
-            name = wait_get_text(page, [row.get("name_sel","")] + rules.get("name", []))
-            price = wait_get_text(page, [row.get("price_sel","")] + rules.get("price", []))
-            ch_abs_raw = wait_get_text(page, [row.get("change_abs_sel","")] + rules.get("change_abs", []))
-            ch_pct_raw = wait_get_text(page, [row.get("change_pct_sel","")] + rules.get("change_pct", []))
+            name = wait_get_text(page, rules.get("name", []))
+            price = wait_get_text(page, rules.get("price", []))
+            ch_abs_raw = wait_get_text(page, rules.get("change_abs", []))
+            ch_pct_raw = wait_get_text(page, rules.get("change_pct", []))
 
             # Fallback da frammento URL (solo % e prezzo)
             if (not price) or (not ch_pct_raw):
@@ -227,27 +241,45 @@ def main():
                 with open(os.path.join(out_dir, f"ERROR_SHOT_{sanitize(url)}.txt"), "w", encoding="utf-8") as ef:
                     ef.write(str(e))
 
-            # Ora locale corretta (CET/CEST)
-            captured_at_local = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+            captured_local = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
+            # Record per quotes.csv (run corrente)
             records.append({
                 "source": domain,
                 "url": url,
                 "name": name,
                 "price": price,
-                "change_abs": change_abs,     # valore assoluto
-                "change_pct": change_pct,     # percentuale
-                "captured_at_local": captured_at_local,
+                "change_abs": change_abs,
+                "change_pct": change_pct,
+                "captured_at_local": captured_local,
+            })
+
+            # Riga per urls.csv (ultimo valore)
+            latest_rows.append({
+                "url": url,
+                "name": name,
+                "price": price,
+                "change_abs": change_abs,
+                "change_pct": change_pct,
+                "captured_at_local": captured_local,
             })
 
         browser.close()
 
-    df = pd.DataFrame.from_records(records)
-    df.to_csv(os.path.join(out_dir, "quotes.csv"), index=False)
+    # --- Salvataggi ---
+    # 1) quotes.csv del run (con screenshot e log nella cartella timestamp)
+    df_quotes = pd.DataFrame.from_records(records)
+    df_quotes.to_csv(os.path.join(out_dir, "quotes.csv"), index=False)
     with open(os.path.join(out_dir, "quotes.json"), "w", encoding="utf-8") as jf:
         json.dump(records, jf, ensure_ascii=False, indent=2)
 
-    print(f"[OK] Outputs -> {out_dir}")
+    # 2) urls.csv sovrascritto con gli ULTIMI valori (ordine come l'input)
+    df_latest = pd.DataFrame(latest_rows, columns=[
+        "url", "name", "price", "change_abs", "change_pct", "captured_at_local"
+    ])
+    df_latest.to_csv(input_path, index=False)
+
+    print(f"[OK] Outputs -> {out_dir}  |  urls.csv updated: {input_path}")
 
 if __name__ == "__main__":
     main()
