@@ -3,27 +3,27 @@
     "source": "it.investing.com",
     "url": "https://it.investing.com/etfs/lyxor-msci-world-info-tech-tr?cid=47228",
     "name": "Amundi MSCI World Information Technology UCITS ETF EUR Acc (LTNOW)",
-    "price": "992,88",
-    "change_abs": "+8,75",
-    "change_pct": "+0,89%",
-    "captured_at_local": "2025-11-12 16:10:02"
+    "price": "989,06",
+    "change_abs": "+4,93",
+    "change_pct": "+0,50%",
+    "captured_at_local": "2025-11-12 17:55:38"
   },
   {
     "source": "it.investing.com",
     "url": "https://it.investing.com/etfs/xtrackers-ai-and-big-data-ucits?cid=1178262",
     "name": "Xtrackers Artificial Intelligence & Big Data UCITS ETF 1C (XAIX)",
-    "price": "157,84",
-    "change_abs": "+0,68",
-    "change_pct": "+0,43%",
-    "captured_at_local": "2025-11-12 16:10:08"
+    "price": "157,00",
+    "change_abs": "-0,16",
+    "change_pct": "-0,10%",
+    "captured_at_local": "2025-11-12 17:55:44"
   },
   {
     "source": "it.investing.com",
     "url": "https://it.investing.com/etfs/amundi-etf-nasdaq-100---eur?cid=46874",
     "name": "Amundi Index Solutions - Amundi Nasdaq-100 Swap ETF EUR Acc (ANX)",
-    "price": "251,85",
-    "change_abs": "+1,46",
-    "change_pct": "+0,58%",
-    "captured_at_local": "2025-11-12 16:10:13"
+    "price": "251,11",
+    "change_abs": "+0,72",
+    "change_pct": "+0,29%",
+    "captured_at_local": "2025-11-12 17:55:49"
   }
 ]
