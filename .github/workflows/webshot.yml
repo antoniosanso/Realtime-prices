@@ -1,1 +1,48 @@
-
+name: Webshot URLs
+on:
+  workflow_dispatch:
+    inputs:
+      input_file:
+        description: "Path to the text file with one URL per line"
+        required: false
+        default: "urls.txt"
+      out_dir:
+        description: "Output directory for screenshots"
+        required: false
+        default: "screenshots"
+      viewport:
+        description: "Viewport WxH (e.g., 1366x768)"
+        required: false
+        default: "1366x768"
+      delay_ms:
+        description: "Extra delay after network idle (ms) before shot"
+        required: false
+        default: "1500"
+  schedule:
+    - cron: "0 6 * * 1-5"
+jobs:
+  webshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+      - name: Run screenshots
+        env:
+          INPUT_FILE: ${{ github.event.inputs.input_file }}
+          OUT_DIR: ${{ github.event.inputs.out_dir }}
+          VIEWPORT: ${{ github.event.inputs.viewport }}
+          DELAY_MS: ${{ github.event.inputs.delay_ms }}
+        run: |
+          python webshot.py --input "${INPUT_FILE:-urls.txt}" --out "${OUT_DIR:-screenshots}" --viewport "${VIEWPORT:-1366x768}" --delay "${DELAY_MS:-1500}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webshots-${{ github.run_id }}
+          path: ${{ github.event.inputs.out_dir || 'screenshots' }}
+          if-no-files-found: warn
