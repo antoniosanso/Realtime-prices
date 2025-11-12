@@ -1,4 +1,4 @@
-name: Webshot & Quote Extractor (v3.2)
+name: Realtime Quote Extractor
 
 on:
   workflow_dispatch:
@@ -50,7 +50,7 @@ jobs:
         run: |
           mkdir -p "${{ github.event.inputs.out_dir || 'webshots' }}"
 
-      # 👇 Risolve automaticamente il path corretto di urls.csv (root o sottocartelle)
+      # Risolve automaticamente il path corretto di urls.csv (root o sottocartelle)
       - name: Resolve input path
         id: resolve
         shell: bash
@@ -68,16 +68,16 @@ jobs:
           fi
           echo "found=$CAND" >> "$GITHUB_OUTPUT"
 
-      # 👇 Mostra le prime righe del file trovato (debug rapido)
       - name: Show input file (debug)
         shell: bash
         run: |
           echo "USING: ${{ steps.resolve.outputs.found }}"
           sed -n '1,50p' "${{ steps.resolve.outputs.found }}" || true
 
-      # 👇 Esegue l’estrazione (screenshot + tabella quote)
       - name: Run extractor
         shell: bash
+        env:
+          TIMEZONE: "Europe/Rome"
         run: |
           set -euxo pipefail
           python webshot_extract.py \
@@ -98,9 +98,10 @@ jobs:
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git add ${{ github.event.inputs.out_dir || 'webshots' }} || true
+          # 👉 committa sia la cartella webshots/ sia l'input urls.csv aggiornato
+          git add "${{ github.event.inputs.out_dir || 'webshots' }}" "${{ steps.resolve.outputs.found }}" || true
           if ! git diff --cached --quiet; then
-            git commit -m "webshot outputs: ${GITHUB_RUN_ID}" || true
+            git commit -m "webshot outputs & urls.csv update: ${GITHUB_RUN_ID}" || true
             git pull --rebase || true
             git push || true
           else
@@ -110,5 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: webshot-${{ github.run_id }}
-          path: ${{ github.event.inputs.out_dir || 'webshots' }}
+          path: |
+            ${{ github.event.inputs.out_dir || 'webshots' }}
+            ${{ steps.resolve.outputs.found }}
           if-no-files-found: warn
